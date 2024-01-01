@@ -111,7 +111,7 @@ impl Display for Board {
 
             writeln!(f)?;
         }
-        write!(f, " ╰─────\n   abc")?;
+        write!(f, " ╰─────\n   ABC")?;
         Ok(())
     }
 }
