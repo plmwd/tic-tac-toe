@@ -32,22 +32,22 @@ impl Display for Player {
 }
 
 // rank:
-// 2: 6 7 8
-// 1: 3 4 5
-// 0: 0 1 2
+// 3: 6 7 8
+// 2: 3 4 5
+// 1: 0 1 2
 //    A B C : file
 #[derive(Debug, Default, PartialEq, PartialOrd, Clone, Copy)]
 pub struct TileId(u8);
 impl TileId {
-    pub const A0: TileId = TileId(0);
-    pub const B0: TileId = TileId(1);
-    pub const C0: TileId = TileId(2);
-    pub const A1: TileId = TileId(3);
-    pub const B1: TileId = TileId(4);
-    pub const C1: TileId = TileId(5);
-    pub const A2: TileId = TileId(6);
-    pub const B2: TileId = TileId(7);
-    pub const C2: TileId = TileId(8);
+    pub const A1: TileId = TileId(0);
+    pub const B1: TileId = TileId(1);
+    pub const C1: TileId = TileId(2);
+    pub const A2: TileId = TileId(3);
+    pub const B2: TileId = TileId(4);
+    pub const C2: TileId = TileId(5);
+    pub const A3: TileId = TileId(6);
+    pub const B3: TileId = TileId(7);
+    pub const C3: TileId = TileId(8);
 }
 
 impl FromStr for TileId {
@@ -55,15 +55,15 @@ impl FromStr for TileId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "a0" | "A0" => Ok(TileId::A0),
             "a1" | "A1" => Ok(TileId::A1),
             "a2" | "A2" => Ok(TileId::A2),
-            "b0" | "B0" => Ok(TileId::B0),
+            "a3" | "A3" => Ok(TileId::A3),
             "b1" | "B1" => Ok(TileId::B1),
             "b2" | "B2" => Ok(TileId::B2),
-            "c0" | "C0" => Ok(TileId::C0),
+            "b3" | "B3" => Ok(TileId::B3),
             "c1" | "C1" => Ok(TileId::C1),
             "c2" | "C2" => Ok(TileId::C2),
+            "c3" | "C3" => Ok(TileId::C3),
             _ => Err(()),
         }
     }
@@ -100,15 +100,18 @@ impl IndexMut<TileId> for Board {
 
 impl Display for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for rank in self.tiles.chunks_exact(3).rev() {
+        for (i, rank) in self.tiles.chunks_exact(3).enumerate().rev() {
+            write!(f, "{}│ ", i + 1)?;
             for tile in rank {
                 match tile {
                     Some(player) => write!(f, "{player}")?,
                     None => write!(f, "-")?,
                 };
             }
+
             writeln!(f)?;
         }
+        write!(f, " ╰─────\n   abc")?;
         Ok(())
     }
 }
