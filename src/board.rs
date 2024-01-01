@@ -31,10 +31,11 @@ impl Display for Player {
     }
 }
 
+// rank:
 // 2: 6 7 8
 // 1: 3 4 5
 // 0: 0 1 2
-//    A B C
+//    A B C : file
 #[derive(Debug, Default, PartialEq, PartialOrd, Clone, Copy)]
 pub struct TileId(u8);
 impl TileId {

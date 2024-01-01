@@ -1,9 +1,8 @@
 mod board;
 mod game;
 use board::Player;
-use game::{play, Game};
+use game::play;
 
 fn main() {
-    let game = Game::new(Player::X);
-    play(game);
+    play(Player::O);
 }

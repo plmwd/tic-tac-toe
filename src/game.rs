@@ -128,7 +128,8 @@ impl Game<Conclusion> {
     }
 }
 
-pub fn play(mut game: Game<InProgress>) {
+pub fn play(first_turn: Player) {
+    let mut game = Game::new(first_turn);
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut input = String::new();
