@@ -149,7 +149,7 @@ pub fn play(mut game: Game<InProgress>) {
 
         game = match game.mark(tile) {
             TurnResult::Retry(g) => {
-                println!("Invalid tile");
+                println!("Invalid tile!");
                 g
             }
             TurnResult::NextTurn(g) => g,
