@@ -10,35 +10,37 @@ pub fn play(first_turn: Player) {
     let mut stdout = io::stdout();
     let mut input = String::new();
 
-    let conclusion = loop {
+    let concluded_game = 'done: loop {
         println!("\n{}\n", game.board);
 
-        let tile: TileId = loop {
-            input.clear();
-            print!("{}'s turn: ", game.whos_turn());
-            stdout.flush().expect("this should not fail");
-            stdin.read_line(&mut input).expect("stdio read fucked");
-            if let Ok(tile) = TileId::from_str(input.trim()) {
-                break tile;
-            }
-            println!("Invalid input! Try again.");
-        };
+        game = 'turn: loop {
+            let tile: TileId = loop {
+                input.clear();
+                print!("{}'s turn: ", game.whos_turn());
+                stdout.flush().expect("this should not fail");
+                stdin.read_line(&mut input).expect("stdio read fucked");
+                if let Ok(tile) = TileId::from_str(input.trim()) {
+                    break tile;
+                }
+                println!("Invalid input! Try again.");
+            };
 
-        game = match game.mark(tile) {
-            TurnResult::Retry(g) => {
-                println!("Invalid tile! Tile already marked. Try again.");
-                g
-            }
-            TurnResult::NextTurn(g) => g,
-            TurnResult::Concluded(conclusion) => break conclusion,
-        };
+            game = match game.mark(tile) {
+                TurnResult::Retry(g) => {
+                    println!("Invalid tile! Tile already marked. Try again.");
+                    g
+                }
+                TurnResult::NextTurn(g) => break 'turn g,
+                TurnResult::Concluded(conclusion) => break 'done conclusion,
+            };
+        }
     };
 
-    match conclusion.conclusion() {
+    match concluded_game.conclusion() {
         Conclusion::Win(player) => println!("{player} won!"),
         Conclusion::Draw => println!("Draw."),
     };
-    println!("\n{}\n", conclusion.board);
+    println!("\n{}\n", concluded_game.board);
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
