@@ -75,8 +75,8 @@ pub struct Board {
 }
 
 impl Board {
-    pub fn mark(&mut self, index: TileId, player: Player) {
-        self[index] = Some(player);
+    pub fn mark(&mut self, tile: TileId, player: Player) {
+        self[tile] = Some(player);
     }
 
     pub fn mark_count(&self) -> u8 {
@@ -87,8 +87,8 @@ impl Board {
 impl Index<TileId> for Board {
     type Output = Option<Player>;
 
-    fn index(&self, index: TileId) -> &Self::Output {
-        &self.tiles[index.0 as usize]
+    fn index(&self, tile: TileId) -> &Self::Output {
+        &self.tiles[tile.0 as usize]
     }
 }
 
