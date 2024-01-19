@@ -10,101 +10,82 @@ pub fn play(first_turn: Player) {
     let mut stdout = io::stdout();
     let mut input = String::new();
 
-    let concluded_game = 'done: loop {
-        println!("\n{}\n", game.board);
+    let conclusion = loop {
+        match game.state {
+            State::Concluded(conclusion) => break conclusion,
+            State::Playing(whos_turn) => {
+                println!("\n{}\n", game.board);
 
-        game = 'turn: loop {
-            let tile: TileId = loop {
-                input.clear();
-                print!("{}'s turn: ", game.whos_turn());
-                stdout.flush().expect("this should not fail");
-                stdin.read_line(&mut input).expect("stdio read fucked");
-                if let Ok(tile) = TileId::from_str(input.trim()) {
-                    break tile;
-                }
-                println!("Invalid input! Try again.");
-            };
+                loop {
+                    let tile: TileId = loop {
+                        input.clear();
+                        print!("{}'s turn: ", whos_turn);
+                        stdout.flush().expect("this should not fail");
+                        stdin.read_line(&mut input).expect("stdio read fucked");
+                        if let Ok(tile) = TileId::from_str(input.trim()) {
+                            break tile;
+                        }
+                        println!("Invalid input! Try again.");
+                    };
 
-            game = match game.mark(tile) {
-                TurnResult::Retry(g) => {
+                    if game.try_mark_tile(tile) {
+                        break;
+                    }
                     println!("Invalid tile! Tile already marked. Try again.");
-                    g
                 }
-                TurnResult::NextTurn(g) => break 'turn g,
-                TurnResult::Concluded(conclusion) => break 'done conclusion,
-            };
-        }
+                game.next_turn();
+            }
+        };
     };
 
-    match concluded_game.conclusion() {
+    match conclusion {
         Conclusion::Win(player) => println!("{player} won!"),
         Conclusion::Draw => println!("Draw."),
     };
-    println!("\n{}\n", concluded_game.board);
+    println!("\n{}\n", game.board);
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum Conclusion {
+pub enum Conclusion {
     Win(Player),
     Draw,
 }
 
 #[derive(Debug)]
-pub struct InProgress {
-    turn: Player,
+pub enum State {
+    Playing(Player),
+    Concluded(Conclusion),
 }
 
 #[derive(Debug)]
-pub struct NewGame;
-
-pub trait GameState {}
-impl GameState for Conclusion {}
-impl GameState for InProgress {}
-impl GameState for NewGame {}
-
-#[derive(Debug)]
-pub struct Game<S: GameState = NewGame> {
-    board: Board,
-    state: S,
+pub struct Game {
+    pub board: Board,
+    pub state: State,
 }
 
-impl Game<NewGame> {
-    pub fn new(first_turn: Player) -> Game<InProgress> {
+impl Game {
+    pub fn new(first_turn: Player) -> Self {
         Game {
             board: Board::default(),
-            state: InProgress { turn: first_turn },
+            state: State::Playing(first_turn),
         }
     }
-}
 
-enum TurnResult {
-    Retry(Game<InProgress>),
-    NextTurn(Game<InProgress>),
-    Concluded(Game<Conclusion>),
-}
-
-impl Game<InProgress> {
-    fn mark(mut self, tile: TileId) -> TurnResult {
+    pub fn try_mark_tile(&mut self, tile: TileId) -> bool {
         if !self.is_valid_mark(tile) {
-            return TurnResult::Retry(self);
+            return false;
         }
-        self.board.mark(tile, self.state.turn);
 
-        if let Some(conclusion) = self.has_game_concluded() {
-            TurnResult::Concluded(Game {
-                state: conclusion,
-                board: self.board,
-            })
-        } else {
-            TurnResult::NextTurn(self.next_turn())
+        match self.state {
+            State::Concluded(_) => false,
+            State::Playing(turn) => {
+                self.board.mark(tile, turn);
+                true
+            }
         }
     }
 
-    fn whos_turn(&self) -> Player {
-        self.state.turn
-    }
-
-    fn has_game_concluded(&self) -> Option<Conclusion> {
+    pub fn has_game_concluded(&self) -> Option<Conclusion> {
         let mark_count = self.board.mark_count();
         if mark_count < 3 {
             return None;
@@ -155,14 +136,13 @@ impl Game<InProgress> {
         self.board[tile].is_none()
     }
 
-    fn next_turn(mut self) -> Self {
-        self.state.turn = !self.state.turn;
-        self
-    }
-}
-
-impl Game<Conclusion> {
-    pub fn conclusion(&self) -> Conclusion {
-        self.state
+    pub fn next_turn(&mut self) {
+        if let State::Playing(player) = self.state {
+            if let Some(conclusion) = self.has_game_concluded() {
+                self.state = State::Concluded(conclusion);
+            } else {
+                self.state = State::Playing(!player)
+            };
+        }
     }
 }
