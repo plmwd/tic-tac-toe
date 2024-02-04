@@ -1,18 +1,20 @@
+use serde::{Deserialize, Serialize};
+
 pub use crate::board::{Board, Player, TileId};
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Conclusion {
     Win(Player),
     Draw,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum State {
     Playing(Player),
     Concluded(Conclusion),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Game {
     pub board: Board,
     pub state: State,

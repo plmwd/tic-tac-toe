@@ -4,7 +4,9 @@ use std::{
     str::FromStr,
 };
 
-#[derive(Debug, Default, PartialEq, Clone, Copy)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Default, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Player {
     #[default]
     O,
@@ -69,7 +71,7 @@ impl FromStr for TileId {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Board {
     tiles: [Option<Player>; 9],
 }
