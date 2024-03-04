@@ -8,13 +8,19 @@ pub enum Conclusion {
     Draw,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum State {
     Playing(Player),
     Concluded(Conclusion),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Default for State {
+    fn default() -> Self {
+        State::Playing(Player::O)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Game {
     pub board: Board,
     pub state: State,
