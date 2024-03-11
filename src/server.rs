@@ -51,9 +51,8 @@ impl Connection {
             if 0 == self.stream.read_buf(&mut self.buffer).await? {
                 if self.buffer.is_empty() {
                     return Ok(None);
-                } else {
-                    anyhow::bail!("Connection reset by peer");
                 }
+                anyhow::bail!("Connection reset by peer");
             }
         }
     }
@@ -112,6 +111,7 @@ struct ConnectionContext {
 enum Message {
     Disconnect,
     Request(Request),
+    // TODO: flatten this so that Response has Error variant
     Response(Result<Response, ErrorResponse>),
     Notification(Notification),
 }
@@ -166,6 +166,7 @@ impl ServerHandle {
     }
 }
 
+#[derive(Debug)]
 enum ServerState {
     WaitingForPlayers,
     Playing(game::Game),
@@ -177,6 +178,7 @@ enum ServerState {
 // - the two connections play
 //      - if any connection is lost, the other player automatically wins
 // - additional connections will watch the match
+#[derive(Debug)]
 struct Server {
     broadcast: broadcast::Sender<Notification>,
     req_rx: mpsc::Receiver<ContextedRequest>,
@@ -240,6 +242,7 @@ impl Server {
                     panic!("unknown error handling requests");
                 }
             };
+            println!("post processing {:#?}", &self);
         }
     }
 
