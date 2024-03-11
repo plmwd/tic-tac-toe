@@ -1,16 +1,16 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr};
 
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     select,
-    sync::{broadcast, mpsc, oneshot, Mutex},
+    sync::{broadcast, mpsc, oneshot},
     task::{AbortHandle, JoinSet},
 };
 
-use crate::game::{self, Game};
+use crate::game;
 
 type ConnectionId = u32;
 
@@ -28,7 +28,7 @@ impl Connection {
         }
     }
 
-    async fn read_message(&mut self) -> anyhow::Result<Option<Message>> {
+    async fn recv(&mut self) -> anyhow::Result<Option<Message>> {
         self.buffer.clear();
         loop {
             match ron::de::from_bytes(&self.buffer) {
@@ -38,9 +38,11 @@ impl Connection {
                     ron::Error::Eof => {}
                     e => {
                         println!("error reading message {:#?}", e);
-                        self.write_message(&Message::InvalidMessage(format!("{}", e)))
-                            .await
-                            .unwrap();
+                        self.send(&Message::Response(Err(ErrorResponse::InvalidMessage(
+                            format!("{}", e),
+                        ))))
+                        .await
+                        .unwrap();
                         self.buffer.clear();
                     }
                 },
@@ -56,7 +58,7 @@ impl Connection {
         }
     }
 
-    async fn write_message(&mut self, mes: &Message) -> tokio::io::Result<()> {
+    async fn send(&mut self, mes: &Message) -> tokio::io::Result<()> {
         self.stream
             .write_all(format!("{}\n", ron::ser::to_string(&mes).unwrap()).as_bytes())
             .await?;
@@ -65,19 +67,27 @@ impl Connection {
     }
 }
 
-async fn handle_connection(mut con: Connection, server: ServerHandle) -> anyhow::Result<()> {
+async fn handle_connection(mut con: Connection, mut server: ServerHandle) -> anyhow::Result<()> {
     loop {
-        match con.read_message().await.unwrap() {
-            Some(Message::Disconnect) => {
-                println!("disconnect");
-                break;
-            }
+        match con.recv().await.unwrap() {
             None => {
                 println!("con EOF");
                 break;
             }
-            Some(mes) => {
-                println!("got mes: {:?}", mes);
+            Some(Message::Disconnect) => {
+                println!("disconnect");
+                break;
+            }
+            Some(Message::Request(req)) => {
+                println!("got request: {:?}", req);
+                let rsp = server.request(req).await;
+                con.send(&Message::Response(rsp)).await?;
+            }
+            Some(_) => {
+                con.send(&Message::Response(Err(ErrorResponse::InvalidMessage(
+                    "not a request".to_string(),
+                ))))
+                .await?
             }
         };
     }
@@ -100,38 +110,65 @@ struct ConnectionContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Message {
-    Join,
-    Joined(Option<game::Player>),
     Disconnect,
-    GetInfo,
-    Info(Game),
+    Request(Request),
+    Response(Result<Response, ErrorResponse>),
+    Notification(Notification),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Request {
+    Join,
+    GetGameInfo,
     Chat(String),
     PlayTurn(u8),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Response {
+    Ok,
+    GameInfo(game::Game),
+    Joined(Option<game::Player>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Notification {
+    Chat { from: String, msg: String },
+    ServerInfo(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ErrorResponse {
     InvalidTile,
     NotYourTurn,
     InvalidMessage(String),
+    ServerError(String),
 }
 
-type Request = (ConnectionId, Message, oneshot::Sender<Message>);
+type ContextedRequest = (
+    ConnectionId,
+    Request,
+    oneshot::Sender<Result<Response, ErrorResponse>>,
+);
 
 #[derive(Debug)]
 struct ServerHandle {
     conn_id: ConnectionId,
-    req_tx: mpsc::Sender<Request>,
-    broadcast: broadcast::Receiver<Message>,
+    req_tx: mpsc::Sender<ContextedRequest>,
+    broadcast: broadcast::Receiver<Notification>,
 }
 
 impl ServerHandle {
-    async fn request(&mut self, msg: Message) -> Message {
+    async fn request(&mut self, req: Request) -> Result<Response, ErrorResponse> {
         let (tx, rx) = oneshot::channel();
-        self.req_tx.send((self.conn_id, msg, tx)).await.unwrap();
+        self.req_tx.send((self.conn_id, req, tx)).await.unwrap();
         rx.await.unwrap()
     }
 }
 
 enum ServerState {
     WaitingForPlayers,
-    Playing(Game),
+    Playing(game::Game),
 }
 
 // Game flow:
@@ -141,9 +178,9 @@ enum ServerState {
 //      - if any connection is lost, the other player automatically wins
 // - additional connections will watch the match
 struct Server {
-    broadcast: broadcast::Sender<Message>,
-    req_rx: mpsc::Receiver<Request>,
-    req_tx: mpsc::Sender<Request>,
+    broadcast: broadcast::Sender<Notification>,
+    req_rx: mpsc::Receiver<ContextedRequest>,
+    req_tx: mpsc::Sender<ContextedRequest>,
     contexts: HashMap<ConnectionId, ConnectionContext>,
     connections: JoinSet<ConnectionId>,
     next_conn_id: ConnectionId,
@@ -175,7 +212,7 @@ impl Server {
         enum Action {
             NewConnection(TcpStream, SocketAddr),
             Disconnected(ConnectionId),
-            Request(Option<Request>),
+            Request(Option<ContextedRequest>),
         }
 
         loop {
@@ -206,8 +243,30 @@ impl Server {
         }
     }
 
-    fn handle_request(&mut self, (cx, msg, rsp): Request) {
-        todo!()
+    fn handle_request(&mut self, (conn_id, req, rsp): ContextedRequest) {
+        let Some(cx) = self.contexts.get_mut(&conn_id) else {
+            println!("dropping request {} {:#?}", conn_id, req);
+            return;
+        };
+
+        let r: Result<Response, ErrorResponse> = match (&self.state, req) {
+            (_, Request::Chat(msg)) => {
+                let from = match cx.group {
+                    Group::Observer => cx.addr.to_string(),
+                    Group::Player(p) => p.to_string(),
+                };
+                self.broadcast
+                    .send(Notification::Chat { from, msg })
+                    .unwrap();
+                Ok(Response::Ok)
+            }
+            (ServerState::WaitingForPlayers, _) => Err(ErrorResponse::InvalidMessage(
+                "game not in progress".to_string(),
+            )),
+            _ => Err(ErrorResponse::InvalidMessage("not implemented".to_string())),
+        };
+
+        rsp.send(r).unwrap();
     }
 
     fn handle_disconnect(&mut self, conn_id: ConnectionId) {
@@ -216,7 +275,10 @@ impl Server {
             .remove(&conn_id)
             .expect("connections cannot be removed twice");
         println!("client disconnected {:#?}", cx);
-        // TODO: send notification?
+        let _ = self.broadcast.send(Notification::ServerInfo(format!(
+            "{} disconnected",
+            cx.addr
+        )));
     }
 
     fn handle_new_connection(&mut self, socket: TcpStream, addr: SocketAddr) {
