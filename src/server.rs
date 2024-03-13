@@ -18,13 +18,15 @@ type ConnectionId = u32;
 struct Connection {
     stream: BufReader<TcpStream>,
     buffer: BytesMut,
+    addr: SocketAddr,
 }
 
 impl Connection {
-    fn new(socket: TcpStream) -> Self {
+    fn new(socket: TcpStream, addr: SocketAddr) -> Self {
         Self {
             buffer: BytesMut::with_capacity(256),
             stream: BufReader::new(socket),
+            addr,
         }
     }
 
@@ -68,27 +70,44 @@ impl Connection {
 
 async fn handle_connection(mut con: Connection, mut server: ServerHandle) -> anyhow::Result<()> {
     loop {
-        match con.recv().await.unwrap() {
-            None => {
-                println!("con EOF");
-                break;
+        select! {
+            notification = server.broadcast.recv() => {
+                use broadcast::error::RecvError as RecvError;
+                match notification {
+                    Ok(notification) => {
+                        con.send(&Message::Notification(notification)).await?;
+                    },
+                    Err(RecvError::Lagged(num_skipped)) => {
+                        println!("connection {} lagged by {} notifications", con.addr, num_skipped);
+                        continue;
+                    },
+                    Err(RecvError::Closed) => anyhow::bail!("server broadcast dropped"),
+                }
             }
-            Some(Message::Disconnect) => {
-                println!("disconnect");
-                break;
+            msg = con.recv() => {
+                match msg.unwrap() {
+                    None => {
+                        println!("con EOF");
+                        break;
+                    }
+                    Some(Message::Disconnect) => {
+                        println!("disconnect");
+                        break;
+                    }
+                    Some(Message::Request(req)) => {
+                        println!("got request: {:?}", req);
+                        let rsp = server.request(req).await;
+                        con.send(&Message::Response(rsp)).await?;
+                    }
+                    Some(_) => {
+                        con.send(&Message::Response(Err(ErrorResponse::InvalidMessage(
+                            "not a request".to_string(),
+                        ))))
+                        .await?
+                    }
+                };
             }
-            Some(Message::Request(req)) => {
-                println!("got request: {:?}", req);
-                let rsp = server.request(req).await;
-                con.send(&Message::Response(rsp)).await?;
-            }
-            Some(_) => {
-                con.send(&Message::Response(Err(ErrorResponse::InvalidMessage(
-                    "not a request".to_string(),
-                ))))
-                .await?
-            }
-        };
+        }
     }
 
     Ok(())
@@ -292,7 +311,7 @@ impl Server {
             "connection id already in use"
         );
 
-        let con = Connection::new(socket);
+        let con = Connection::new(socket, addr);
         let handle = ServerHandle {
             req_tx: self.req_tx.clone(),
             broadcast: self.broadcast.subscribe(),
