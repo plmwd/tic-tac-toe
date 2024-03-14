@@ -1,7 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use bytes::BytesMut;
-use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -11,6 +10,7 @@ use tokio::{
 };
 
 use crate::game;
+use crate::message::{Error, Message, Notification, Request, Response};
 
 type ConnectionId = u32;
 
@@ -40,11 +40,9 @@ impl Connection {
                     ron::Error::Eof => {}
                     e => {
                         println!("error reading message {:#?}", e);
-                        self.send(&Message::Response(Err(ErrorResponse::InvalidMessage(
-                            format!("{}", e),
-                        ))))
-                        .await
-                        .unwrap();
+                        self.send(Error::InvalidMessage(format!("{}", e)))
+                            .await
+                            .unwrap();
                         self.buffer.clear();
                     }
                 },
@@ -59,9 +57,11 @@ impl Connection {
         }
     }
 
-    async fn send(&mut self, mes: &Message) -> tokio::io::Result<()> {
+    async fn send(&mut self, mes: impl Into<Message>) -> tokio::io::Result<()> {
         self.stream
-            .write_all(format!("{}\n", ron::ser::to_string(&mes).unwrap()).as_bytes())
+            .write_all(
+                format!("{}\n", ron::ser::to_string::<Message>(&mes.into()).unwrap()).as_bytes(),
+            )
             .await?;
         self.stream.flush().await?;
         Ok(())
@@ -75,7 +75,7 @@ async fn handle_connection(mut con: Connection, mut server: ServerHandle) -> any
                 use broadcast::error::RecvError as RecvError;
                 match notification {
                     Ok(notification) => {
-                        con.send(&Message::Notification(notification)).await?;
+                        con.send(notification).await?;
                     },
                     Err(RecvError::Lagged(num_skipped)) => {
                         println!("connection {} lagged by {} notifications", con.addr, num_skipped);
@@ -97,12 +97,12 @@ async fn handle_connection(mut con: Connection, mut server: ServerHandle) -> any
                     Some(Message::Request(req)) => {
                         println!("got request: {:?}", req);
                         let rsp = server.request(req).await;
-                        con.send(&Message::Response(rsp)).await?;
+                        con.send(Message::Response(rsp)).await?;
                     }
                     Some(_) => {
-                        con.send(&Message::Response(Err(ErrorResponse::InvalidMessage(
+                        con.send(Error::InvalidMessage(
                             "not a request".to_string(),
-                        ))))
+                        ))
                         .await?
                     }
                 };
@@ -126,48 +126,10 @@ struct ConnectionContext {
     abort_handle: AbortHandle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum Message {
-    Disconnect,
-    Request(Request),
-    // TODO: flatten this so that Response has Error variant
-    Response(Result<Response, ErrorResponse>),
-    Notification(Notification),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum Request {
-    Join,
-    GetGameInfo,
-    Chat(String),
-    PlayTurn(u8),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum Response {
-    Ok,
-    GameInfo(game::Game),
-    Joined(Option<game::Player>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum Notification {
-    Chat { from: String, msg: String },
-    ServerInfo(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum ErrorResponse {
-    InvalidTile,
-    NotYourTurn,
-    InvalidMessage(String),
-    ServerError(String),
-}
-
 type ContextedRequest = (
     ConnectionId,
     Request,
-    oneshot::Sender<Result<Response, ErrorResponse>>,
+    oneshot::Sender<Result<Response, Error>>,
 );
 
 #[derive(Debug)]
@@ -178,7 +140,7 @@ struct ServerHandle {
 }
 
 impl ServerHandle {
-    async fn request(&mut self, req: Request) -> Result<Response, ErrorResponse> {
+    async fn request(&mut self, req: Request) -> Result<Response, Error> {
         let (tx, rx) = oneshot::channel();
         self.req_tx.send((self.conn_id, req, tx)).await.unwrap();
         rx.await.unwrap()
@@ -271,7 +233,7 @@ impl Server {
             return;
         };
 
-        let r: Result<Response, ErrorResponse> = match (&self.state, req) {
+        let r: Result<Response, Error> = match (&self.state, req) {
             (_, Request::Chat(msg)) => {
                 let from = match cx.group {
                     Group::Observer => cx.addr.to_string(),
@@ -282,10 +244,10 @@ impl Server {
                     .unwrap();
                 Ok(Response::Ok)
             }
-            (ServerState::WaitingForPlayers, _) => Err(ErrorResponse::InvalidMessage(
-                "game not in progress".to_string(),
-            )),
-            _ => Err(ErrorResponse::InvalidMessage("not implemented".to_string())),
+            (ServerState::WaitingForPlayers, _) => {
+                Err(Error::InvalidMessage("game not in progress".to_string()))
+            }
+            _ => Err(Error::InvalidMessage("not implemented".to_string())),
         };
 
         rsp.send(r).unwrap();

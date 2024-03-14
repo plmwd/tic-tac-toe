@@ -2,6 +2,7 @@
 
 mod board;
 mod game;
+mod message;
 mod server;
 mod term;
 use tokio;
