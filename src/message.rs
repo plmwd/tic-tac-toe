@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    Disconnect,
     Request(Request),
     Response(Result<Response, Error>),
     Notification(Notification),
@@ -11,15 +10,16 @@ pub enum Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
-    Join,
+    JoinMatch(Option<Player>),
     GetGameInfo,
     Chat(String),
     PlayTurn(u8),
+    Disconnect,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
-    Ok,
+    Ack,
     GameInfo(Game),
     Joined(Option<Player>),
 }
@@ -32,8 +32,11 @@ pub enum Notification {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Error {
+    WaitingForHost,
     InvalidTile,
     NotYourTurn,
+    MatchInProgress,
+    InvalidParam(String),
     InvalidMessage(String),
     ServerError(String),
 }

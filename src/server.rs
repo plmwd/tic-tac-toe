@@ -1,78 +1,24 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use bytes::BytesMut;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     select,
     sync::{broadcast, mpsc, oneshot},
     task::{AbortHandle, JoinSet},
 };
 
-use crate::game;
-use crate::message::{Error, Message, Notification, Request, Response};
-
-type ConnectionId = u32;
-
-#[derive(Debug)]
-struct Connection {
-    stream: BufReader<TcpStream>,
-    buffer: BytesMut,
-    addr: SocketAddr,
-}
-
-impl Connection {
-    fn new(socket: TcpStream, addr: SocketAddr) -> Self {
-        Self {
-            buffer: BytesMut::with_capacity(256),
-            stream: BufReader::new(socket),
-            addr,
-        }
-    }
-
-    async fn recv(&mut self) -> anyhow::Result<Option<Message>> {
-        self.buffer.clear();
-        loop {
-            match ron::de::from_bytes(&self.buffer) {
-                Ok(mes) => return Ok(Some(mes)),
-                Err(ron::error::SpannedError { code, .. }) => match code {
-                    ron::Error::ExpectedDifferentLength { .. } => {}
-                    ron::Error::Eof => {}
-                    e => {
-                        println!("error reading message {:#?}", e);
-                        self.send(Error::InvalidMessage(format!("{}", e)))
-                            .await
-                            .unwrap();
-                        self.buffer.clear();
-                    }
-                },
-            }
-
-            if 0 == self.stream.read_buf(&mut self.buffer).await? {
-                if self.buffer.is_empty() {
-                    return Ok(None);
-                }
-                anyhow::bail!("Connection reset by peer");
-            }
-        }
-    }
-
-    async fn send(&mut self, mes: impl Into<Message>) -> tokio::io::Result<()> {
-        self.stream
-            .write_all(
-                format!("{}\n", ron::ser::to_string::<Message>(&mes.into()).unwrap()).as_bytes(),
-            )
-            .await?;
-        self.stream.flush().await?;
-        Ok(())
-    }
-}
+use crate::{
+    connection::Connection,
+    message::{Error as ErrorResponse, Message, Notification, Request, Response},
+};
+use crate::{connection::ConnectionId, game};
 
 async fn handle_connection(mut con: Connection, mut server: ServerHandle) -> anyhow::Result<()> {
+    use broadcast::error::RecvError;
+
     loop {
         select! {
             notification = server.broadcast.recv() => {
-                use broadcast::error::RecvError as RecvError;
                 match notification {
                     Ok(notification) => {
                         con.send(notification).await?;
@@ -85,25 +31,19 @@ async fn handle_connection(mut con: Connection, mut server: ServerHandle) -> any
                 }
             }
             msg = con.recv() => {
-                match msg.unwrap() {
+                match msg? {
                     None => {
                         println!("con EOF");
                         break;
                     }
-                    Some(Message::Disconnect) => {
+                    Some(Request::Disconnect) => {
                         println!("disconnect");
                         break;
                     }
-                    Some(Message::Request(req)) => {
+                    Some(req) => {
                         println!("got request: {:?}", req);
                         let rsp = server.request(req).await;
                         con.send(Message::Response(rsp)).await?;
-                    }
-                    Some(_) => {
-                        con.send(Error::InvalidMessage(
-                            "not a request".to_string(),
-                        ))
-                        .await?
                     }
                 };
             }
@@ -115,6 +55,7 @@ async fn handle_connection(mut con: Connection, mut server: ServerHandle) -> any
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Group {
+    Host(Option<game::Player>),
     Observer,
     Player(game::Player),
 }
@@ -126,10 +67,24 @@ struct ConnectionContext {
     abort_handle: AbortHandle,
 }
 
+impl ConnectionContext {
+    fn is_host(&self) -> bool {
+        matches!(self.group, Group::Host(_))
+    }
+
+    fn player(&self) -> Option<game::Player> {
+        match self.group {
+            Group::Observer => None,
+            Group::Host(p) => p,
+            Group::Player(p) => Some(p),
+        }
+    }
+}
+
 type ContextedRequest = (
     ConnectionId,
     Request,
-    oneshot::Sender<Result<Response, Error>>,
+    oneshot::Sender<Result<Response, ErrorResponse>>,
 );
 
 #[derive(Debug)]
@@ -140,15 +95,17 @@ struct ServerHandle {
 }
 
 impl ServerHandle {
-    async fn request(&mut self, req: Request) -> Result<Response, Error> {
+    async fn request(&mut self, req: Request) -> Result<Response, ErrorResponse> {
         let (tx, rx) = oneshot::channel();
         self.req_tx.send((self.conn_id, req, tx)).await.unwrap();
         rx.await.unwrap()
     }
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 enum ServerState {
+    #[default]
+    WaitingForHost,
     WaitingForPlayers,
     Playing(game::Game),
 }
@@ -181,7 +138,7 @@ impl Default for Server {
             contexts: HashMap::with_capacity(32),
             connections: JoinSet::new(),
             next_conn_id: 0,
-            state: ServerState::WaitingForPlayers,
+            state: Default::default(),
         }
     }
 }
@@ -228,26 +185,59 @@ impl Server {
     }
 
     fn handle_request(&mut self, (conn_id, req, rsp): ContextedRequest) {
+        use ErrorResponse::{InvalidMessage, InvalidParam, MatchInProgress, WaitingForHost};
+        use Request::{Chat, JoinMatch};
+        use Response::{Ack, Joined};
+
         let Some(cx) = self.contexts.get_mut(&conn_id) else {
             println!("dropping request {} {:#?}", conn_id, req);
             return;
         };
 
-        let r: Result<Response, Error> = match (&self.state, req) {
-            (_, Request::Chat(msg)) => {
+        let r: Result<Response, ErrorResponse> = match (req, &self.state) {
+            (Chat(msg), _) => {
                 let from = match cx.group {
                     Group::Observer => cx.addr.to_string(),
                     Group::Player(p) => p.to_string(),
+                    Group::Host(None) => "host".to_string(),
+                    Group::Host(Some(p)) => format!("{p} (host)"),
                 };
                 self.broadcast
                     .send(Notification::Chat { from, msg })
                     .unwrap();
-                Ok(Response::Ok)
+                Ok(Ack)
             }
-            (ServerState::WaitingForPlayers, _) => {
-                Err(Error::InvalidMessage("game not in progress".to_string()))
+
+            (JoinMatch(player), ServerState::WaitingForHost) if cx.is_host() => {
+                cx.group = Group::Host(player);
+                self.state = ServerState::WaitingForPlayers;
+                Ok(Joined(player))
             }
-            _ => Err(Error::InvalidMessage("not implemented".to_string())),
+            (JoinMatch(player), ServerState::WaitingForPlayers) => {
+                // Once the second player joins, the state is moved to Playing
+                match cx.group {
+                    Group::Observer | Group::Host(None) => {
+                        // Find existing player, if any
+                        if let Some(other) =
+                            self.contexts.iter().find_map(|id_cx| match id_cx.1.group {
+                                Group::Host(Some(other)) | Group::Player(other) => Some(other),
+                                _ => None,
+                            })
+                        {
+                            if player == other {
+                            } else {
+                            }
+                        }
+                        todo!()
+                    }
+                    Group::Player(_) | Group::Host(Some(_)) => {
+                        Err(InvalidParam("already joined".to_string()))
+                    }
+                }
+            }
+            (JoinMatch(_), ServerState::Playing(_)) => Err(ErrorResponse::MatchInProgress),
+            (_, ServerState::WaitingForHost) => Err(ErrorResponse::WaitingForHost),
+            _ => Err(ErrorResponse::InvalidMessage("not implemented".to_string())),
         };
 
         rsp.send(r).unwrap();
@@ -289,10 +279,16 @@ impl Server {
             conn_id
         });
 
+        let group = if addr.ip().is_loopback() {
+            Group::Host(None)
+        } else {
+            Group::Observer
+        };
+
         self.contexts.insert(
             conn_id,
             ConnectionContext {
-                group: Group::Observer,
+                group,
                 addr,
                 abort_handle,
             },

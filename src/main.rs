@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod board;
+mod connection;
 mod game;
 mod message;
 mod server;
