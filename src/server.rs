@@ -1,4 +1,10 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::{
+    collections::{
+        hash_map::{Entry, OccupiedEntry},
+        HashMap,
+    },
+    net::SocketAddr,
+};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -186,16 +192,17 @@ impl Server {
 
     fn handle_request(&mut self, (conn_id, req, rsp): ContextedRequest) {
         use ErrorResponse::{InvalidMessage, InvalidParam, MatchInProgress, WaitingForHost};
-        use Request::{Chat, JoinMatch};
+        use Request::{Chat, GetGameInfo, JoinMatch, PlayTurn};
         use Response::{Ack, Joined};
 
-        let Some(cx) = self.contexts.get_mut(&conn_id) else {
+        let Entry::Occupied(cx) = self.contexts.entry(conn_id) else {
             println!("dropping request {} {:#?}", conn_id, req);
             return;
         };
 
         let r: Result<Response, ErrorResponse> = match (req, &self.state) {
             (Chat(msg), _) => {
+                let cx = cx.get();
                 let from = match cx.group {
                     Group::Observer => cx.addr.to_string(),
                     Group::Player(p) => p.to_string(),
@@ -208,33 +215,53 @@ impl Server {
                 Ok(Ack)
             }
 
-            (JoinMatch(player), ServerState::WaitingForHost) if cx.is_host() => {
-                cx.group = Group::Host(player);
+            (JoinMatch(player), ServerState::WaitingForHost) if cx.get().is_host() => {
+                cx.into_mut().group = Group::Host(player);
                 self.state = ServerState::WaitingForPlayers;
                 Ok(Joined(player))
             }
-            (JoinMatch(player), ServerState::WaitingForPlayers) => {
+            (JoinMatch(req_join_as), ServerState::WaitingForPlayers) => {
                 // Once the second player joins, the state is moved to Playing
-                match cx.group {
-                    Group::Observer | Group::Host(None) => {
+                match cx.get().group {
+                    group @ (Group::Observer | Group::Host(None)) => {
                         // Find existing player, if any
-                        if let Some(other) =
+                        let already_joined =
                             self.contexts.iter().find_map(|id_cx| match id_cx.1.group {
                                 Group::Host(Some(other)) | Group::Player(other) => Some(other),
                                 _ => None,
-                            })
-                        {
-                            if player == other {
-                            } else {
-                            }
+                            });
+
+                        let join_as = match (req_join_as, already_joined) {
+                            (None, None) => game::Player::O,
+                            (Some(req_join_as), None) => req_join_as,
+                            (None | Some(_), Some(already_joined)) => !already_joined,
+                        };
+
+                        let new_group = if matches!(group, Group::Observer) {
+                            Group::Player(join_as)
+                        } else {
+                            Group::Host(Some(join_as))
+                        };
+
+                        self.contexts
+                            .entry(conn_id)
+                            .and_modify(|cx| cx.group = new_group);
+
+                        if let Some(_) = already_joined {
+                            self.state = ServerState::Playing(game::Game::new(game::Player::O))
                         }
-                        todo!()
+
+                        Ok(Response::Joined(Some(join_as)))
                     }
                     Group::Player(_) | Group::Host(Some(_)) => {
                         Err(InvalidParam("already joined".to_string()))
                     }
                 }
             }
+            (GetGameInfo, ServerState::Playing(game)) => Ok(Response::GameInfo(game.clone())),
+            (PlayTurn(tile), ServerState::Playing(game)) => todo!(),
+            (PlayTurn(_), _) => Err(ErrorResponse::NotAllowed),
+            (GetGameInfo, _) => Err(ErrorResponse::NotAllowed),
             (JoinMatch(_), ServerState::Playing(_)) => Err(ErrorResponse::MatchInProgress),
             (_, ServerState::WaitingForHost) => Err(ErrorResponse::WaitingForHost),
             _ => Err(ErrorResponse::InvalidMessage("not implemented".to_string())),
