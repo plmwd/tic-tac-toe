@@ -1,4 +1,4 @@
-use crate::game::{Board, Conclusion, Game, Player};
+use crate::game::{Conclusion, Game, Player};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,10 +23,7 @@ pub enum Response {
     GameInfo(Game),
     Joined(Option<Player>),
     TurnDone(Game),
-    GameConcluded {
-        board: Board,
-        conclusion: Conclusion,
-    },
+    GameConcluded(Conclusion),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +39,7 @@ pub enum Error {
     NotYourTurn,
     NotAllowed,
     MatchInProgress,
+    GameConcluded(Conclusion),
     InvalidParam(String),
     InvalidMessage(String),
     ServerError(String),

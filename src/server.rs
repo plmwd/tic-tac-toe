@@ -268,10 +268,7 @@ impl Server {
                                 if !game.try_turn(tile_id) {
                                     Err(ErrorResponse::InvalidTile)
                                 } else if let Some(conclusion) = game.has_game_concluded() {
-                                    Ok(Response::GameConcluded {
-                                        board: game.board.clone(),
-                                        conclusion,
-                                    })
+                                    Ok(Response::GameConcluded(conclusion))
                                 } else {
                                     Ok(Response::TurnDone(game.clone()))
                                 }
@@ -279,7 +276,7 @@ impl Server {
                                 Err(ErrorResponse::InvalidTile)
                             }
                         }
-                        game::State::Concluded(_) => todo!(),
+                        game::State::Concluded(_) => Err(ErrorResponse::NotAllowed),
                     }
                 } else {
                     Err(ErrorResponse::NotYourTurn)
@@ -289,7 +286,7 @@ impl Server {
             (GetGameInfo, _) => Err(ErrorResponse::NotAllowed),
             (JoinMatch(_), ServerState::Playing(_)) => Err(ErrorResponse::MatchInProgress),
             (_, ServerState::WaitingForHost) => Err(ErrorResponse::WaitingForHost),
-            _ => Err(ErrorResponse::InvalidMessage("not implemented".to_string())),
+            _ => Err(ErrorResponse::ServerError("not implemented".to_string())),
         };
 
         rsp.send(r).unwrap();
