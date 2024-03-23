@@ -1,8 +1,5 @@
 use std::{
-    collections::{
-        hash_map::{Entry, OccupiedEntry},
-        HashMap,
-    },
+    collections::{hash_map::Entry, HashMap},
     net::SocketAddr,
 };
 
@@ -15,6 +12,7 @@ use tokio::{
 
 use crate::{
     connection::Connection,
+    game::TileId,
     message::{Error as ErrorResponse, Message, Notification, Request, Response},
 };
 use crate::{connection::ConnectionId, game};
@@ -191,7 +189,7 @@ impl Server {
     }
 
     fn handle_request(&mut self, (conn_id, req, rsp): ContextedRequest) {
-        use ErrorResponse::{InvalidMessage, InvalidParam, MatchInProgress, WaitingForHost};
+        use ErrorResponse::InvalidParam;
         use Request::{Chat, GetGameInfo, JoinMatch, PlayTurn};
         use Response::{Ack, Joined};
 
@@ -200,7 +198,8 @@ impl Server {
             return;
         };
 
-        let r: Result<Response, ErrorResponse> = match (req, &self.state) {
+        // TODO: this is the ugliest Rust code I've ever written.
+        let r: Result<Response, ErrorResponse> = match (req, &mut self.state) {
             (Chat(msg), _) => {
                 let cx = cx.get();
                 let from = match cx.group {
@@ -259,7 +258,33 @@ impl Server {
                 }
             }
             (GetGameInfo, ServerState::Playing(game)) => Ok(Response::GameInfo(game.clone())),
-            (PlayTurn(tile), ServerState::Playing(game)) => todo!(),
+            (PlayTurn(tile), ServerState::Playing(game)) => {
+                if let Some(player) = cx.get().player() {
+                    match game.state {
+                        game::State::Playing(turn) => {
+                            if turn != player {
+                                Err(ErrorResponse::NotYourTurn)
+                            } else if let Ok(tile_id) = TileId::try_from(tile) {
+                                if !game.try_turn(tile_id) {
+                                    Err(ErrorResponse::InvalidTile)
+                                } else if let Some(conclusion) = game.has_game_concluded() {
+                                    Ok(Response::GameConcluded {
+                                        board: game.board.clone(),
+                                        conclusion,
+                                    })
+                                } else {
+                                    Ok(Response::TurnDone(game.clone()))
+                                }
+                            } else {
+                                Err(ErrorResponse::InvalidTile)
+                            }
+                        }
+                        game::State::Concluded(_) => todo!(),
+                    }
+                } else {
+                    Err(ErrorResponse::NotYourTurn)
+                }
+            }
             (PlayTurn(_), _) => Err(ErrorResponse::NotAllowed),
             (GetGameInfo, _) => Err(ErrorResponse::NotAllowed),
             (JoinMatch(_), ServerState::Playing(_)) => Err(ErrorResponse::MatchInProgress),

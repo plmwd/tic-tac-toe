@@ -71,6 +71,17 @@ impl FromStr for TileId {
     }
 }
 
+impl TryFrom<u8> for TileId {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            value @ 0..=8 => Ok(TileId(value)),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Board {
     tiles: [Option<Player>; 9],

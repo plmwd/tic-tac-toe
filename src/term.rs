@@ -29,7 +29,7 @@ pub fn play(first_turn: Player) {
 
                 loop {
                     let tile = prompt_for_tile(whos_turn);
-                    if game.try_mark_tile(tile) {
+                    if game.try_turn(tile) {
                         break;
                     }
                     println!("Invalid tile! Tile already marked. Try again.");

@@ -34,7 +34,7 @@ impl Game {
         }
     }
 
-    pub fn try_mark_tile(&mut self, tile: TileId) -> bool {
+    pub fn try_turn(&mut self, tile: TileId) -> bool {
         if !self.is_valid_mark(tile) {
             return false;
         }
